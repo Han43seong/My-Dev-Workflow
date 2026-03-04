@@ -1,0 +1,25 @@
+{
+  "models": {
+    "opus":   { "cli": "claude",  "model_id": "opus",              "cost": "high",   "strength": "복잡한 판단, 코드 리뷰, 범용 코딩" },
+    "codex":  { "cli": "codex",   "model_id": "gpt-5.3-codex",     "cost": "medium", "strength": "백엔드 로직, 디버깅, 보안 분석" },
+    "gemini": { "cli": "gemini",  "model_id": "gemini-3-pro-preview", "cost": "medium", "strength": "UI/UX, 리서치, 대용량 컨텍스트" }
+  },
+  "categories": {
+    "backend":      { "primary": "codex",  "fallback": "opus" },
+    "frontend":     { "primary": "gemini", "fallback": "opus" },
+    "review":       { "primary": "opus",   "fallback": "codex" },
+    "security":     { "primary": "codex",  "fallback": "opus" },
+    "architecture": { "primary": "codex",  "fallback": "opus" },
+    "research":     { "primary": "gemini", "fallback": "opus" },
+    "design":       { "primary": "gemini", "fallback": "opus" },
+    "quick":        { "primary": "opus",   "fallback": "codex" },
+    "debug":        { "primary": "codex",  "fallback": "opus" }
+  },
+  "execution_patterns": {
+    "solo":        { "models": 1, "description": "단일 모델, 단순 작업" },
+    "parallel":    { "models": 3, "description": "3개 모델 동시, 다른 관점" },
+    "sequential":  { "models": 2, "description": "A 결과를 B에 전달" },
+    "adversarial": { "models": 2, "description": "서로 반박/검증" },
+    "consensus":   { "models": 3, "description": "75% 합의 게이트" }
+  }
+}

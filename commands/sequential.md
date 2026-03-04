@@ -1,0 +1,39 @@
+---
+description: 모델A가 작업 수행 → 모델B가 결과를 비판적으로 검증·보완 (구현→리뷰, 설계→보안검토)
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/invoke-sequential.sh:*)"]
+---
+# /sequential — A가 작업 → B가 비판적으로 검증
+
+첫 번째 모델이 결과물을 만들고, 두 번째 모델이 그것의 문제점을 찾아 보완합니다.
+중요한 결과물의 품질을 높이거나 단계별 파이프라인이 필요할 때 사용.
+
+**패턴**: `태스크 → [모델A 실행] → A 결과 → [모델B 검증] → 최종 결과`
+
+## 사용법
+```
+/sequential <모델A> <모델B> <태스크>
+```
+
+## 언제 쓰나
+- 구현 → 리뷰: `codex → opus`
+- 설계 → 보안 검토: `gemini → codex`
+- 리서치 → 사실 검증: `gemini → opus`
+- 코드 작성 → 버그 찾기: `opus → codex`
+
+## 예시
+```
+/sequential codex opus 이 결제 모듈 구현해줘
+/sequential gemini codex 이 마이크로서비스 아키텍처 검토해줘
+/sequential opus codex 이 코드 리뷰 결과를 다시 확인해줘
+```
+
+## 실행 방법
+1. `$ARGUMENTS`에서 첫 단어를 모델A, 두 번째를 모델B, 나머지를 태스크로 분리
+2. 순차 실행:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/invoke-sequential.sh" "<모델A>" "<모델B>" "<태스크>"
+   ```
+3. 결과 정리:
+   - A의 핵심 결론 요약
+   - B가 발견한 이슈/개선점
+   - 최종 통합 결론
