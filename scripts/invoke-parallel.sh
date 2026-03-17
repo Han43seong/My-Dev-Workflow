@@ -1,10 +1,15 @@
 #!/bin/bash
-# invoke-parallel.sh — 여러 모델을 진짜 병렬로 실행
+# invoke-parallel.sh — 여러 모델을 진짜 병렬로 실행 + 파일 기반 결과 영속화
 # Usage: invoke-parallel.sh "<prompt>" [model1 model2 model3]
 # Default models: opus codex gemini
 #
-# 각 모델을 백그라운드(&)로 동시 실행하고 wait로 전부 완료 대기.
-# 결과는 모델별 exit code와 함께 stdout에 출력.
+# 결과:
+#   .orchestration/results/<timestamp>-parallel/combined.md  (통합 결과)
+#   .orchestration/results/<timestamp>-parallel/<model>.md   (개별 결과)
+#
+# stdout으로 combined.md 경로를 출력하고, 결과 파일은 영속적으로 보존됨.
+# Claude Code Bash 도구의 stdout 캡처 문제를 우회하기 위해
+# 결과를 항상 파일에 저장하는 방식으로 동작.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROMPT="${1:-}"
@@ -17,27 +22,31 @@ if [ -z "$PROMPT" ]; then
   exit 1
 fi
 
-# fix: TMPDIR → PARALLEL_DIR (TMPDIR는 시스템 예약 환경변수)
-PARALLEL_DIR=$(mktemp -d /tmp/parallel_XXXXXX)
+# --- 영속적 결과 디렉토리 생성 ---
+LOG_BASE="${ORCH_LOG_DIR:-$PWD/.orchestration/results}"
+mkdir -p "$LOG_BASE" 2>/dev/null
+LOG_DIR="$(cd "$LOG_BASE" 2>/dev/null && pwd)"
 
-# fix: cleanup trap — INT/TERM 시에도 임시 디렉토리 누수 없음
-cleanup() { rm -rf "$PARALLEL_DIR"; }
-trap cleanup EXIT INT TERM
+TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
+RESULTS_DIR="$LOG_DIR/${TIMESTAMP}-parallel"
+mkdir -p "$RESULTS_DIR"
 
-# 각 모델을 백그라운드로 동시 실행 (PID 수집)
+# --- 세션 로그 ---
+echo "[$(date '+%H:%M:%S')] [parallel] START: models=[$MODELS] prompt=${PROMPT:0:80}..." >> "$LOG_DIR/session-log.md"
+
+# --- 각 모델을 백그라운드로 동시 실행 (Advisor, 텍스트 응답만) ---
 MODEL_PIDS=()
 for MODEL in $MODELS; do
   (
-    bash "$SCRIPT_DIR/invoke-model.sh" "$MODEL" "$PROMPT" > "$PARALLEL_DIR/$MODEL.out" 2>"$PARALLEL_DIR/$MODEL.err"
-    echo $? > "$PARALLEL_DIR/$MODEL.exit"
+    ORCH_OUTPUT_FILE="$RESULTS_DIR/$MODEL.md" \
+      bash "$SCRIPT_DIR/invoke-model.sh" "$MODEL" "$PROMPT" 2>"$RESULTS_DIR/$MODEL.err"
+    echo $? > "$RESULTS_DIR/$MODEL.exit"
   ) &
   MODEL_PIDS+=($!)
 done
 
-# 전체 타임아웃 watchdog — 개별 timeout이 실패해도 무한 대기 방지
-# fix: kill 0 → 개별 PID kill (프로세스 그룹 전체 죽이는 문제 해결)
-# fix: sleep을 서브프로세스로 실행 + trap EXIT으로 고아 방지
-PARALLEL_TIMEOUT=${PARALLEL_TIMEOUT:-660}
+# --- 전체 타임아웃 watchdog (Advisor는 빠르므로 180초로 축소) ---
+PARALLEL_TIMEOUT=${PARALLEL_TIMEOUT:-180}
 (
   SLEEP_PID=0
   trap 'kill $SLEEP_PID 2>/dev/null' EXIT
@@ -49,32 +58,59 @@ PARALLEL_TIMEOUT=${PARALLEL_TIMEOUT:-660}
 ) &
 WATCHDOG_PID=$!
 
-# 모델 프로세스만 대기 (watchdog sleep은 대기하지 않음)
+# --- 모델 프로세스만 대기 ---
 for PID in "${MODEL_PIDS[@]}"; do
   wait "$PID" 2>/dev/null || true
 done
 kill "$WATCHDOG_PID" 2>/dev/null || true
 wait "$WATCHDOG_PID" 2>/dev/null || true
 
-# 결과 출력 (모델별 exit code 포함)
-for MODEL in $MODELS; do
-  STATUS=$(cat "$PARALLEL_DIR/$MODEL.exit" 2>/dev/null || echo "?")
-  echo "=== $MODEL (exit:$STATUS) ==="
-  cat "$PARALLEL_DIR/$MODEL.out"
-  # stderr가 있으면 표시
-  if [ -s "$PARALLEL_DIR/$MODEL.err" ]; then
-    cat "$PARALLEL_DIR/$MODEL.err" >&2
-  fi
+# --- combined.md 생성 ---
+COMBINED="$RESULTS_DIR/combined.md"
+{
+  echo "# Parallel Results"
   echo ""
-done
+  echo "> Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "> Models: $MODELS"
+  echo ""
+  for MODEL in $MODELS; do
+    STATUS=$(cat "$RESULTS_DIR/$MODEL.exit" 2>/dev/null || echo "?")
+    BYTES=$(wc -c < "$RESULTS_DIR/$MODEL.md" 2>/dev/null || echo "0")
+    echo "---"
+    echo ""
+    echo "## $MODEL (exit:$STATUS, ${BYTES} bytes)"
+    echo ""
+    if [ -s "$RESULTS_DIR/$MODEL.md" ]; then
+      cat "$RESULTS_DIR/$MODEL.md"
+    else
+      echo "*[empty result]*"
+      if [ -s "$RESULTS_DIR/$MODEL.err" ]; then
+        echo ""
+        echo "**stderr:**"
+        echo '```'
+        head -20 "$RESULTS_DIR/$MODEL.err"
+        echo '```'
+      fi
+    fi
+    echo ""
+  done
+} > "$COMBINED"
 
-# 전체 실패 감지 — 모든 모델이 실패하면 exit 1
+# --- 세션 로그 완료 ---
+COMBINED_SIZE=$(wc -c < "$COMBINED" 2>/dev/null || echo "0")
+echo "[$(date '+%H:%M:%S')] [parallel] DONE: $COMBINED (${COMBINED_SIZE} bytes)" >> "$LOG_DIR/session-log.md"
+
+# --- 전체 실패 감지 ---
 FAIL_COUNT=0
 TOTAL_COUNT=0
 for MODEL in $MODELS; do
-  STATUS=$(cat "$PARALLEL_DIR/$MODEL.exit" 2>/dev/null || echo "1")
+  STATUS=$(cat "$RESULTS_DIR/$MODEL.exit" 2>/dev/null || echo "1")
   [ "$STATUS" != "0" ] && FAIL_COUNT=$((FAIL_COUNT + 1))
   TOTAL_COUNT=$((TOTAL_COUNT + 1))
 done
+
+# --- 결과 출력: 파일 경로 (Claude Code에서 Read 도구로 읽을 수 있음) ---
+echo "ORCH_RESULT_FILE=$COMBINED"
+
 [ "$FAIL_COUNT" -eq "$TOTAL_COUNT" ] && exit 1
 exit 0

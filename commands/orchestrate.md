@@ -1,55 +1,41 @@
 ---
 description: 복잡한 요청을 서브태스크로 분해 → 각각 최적 모델 자동 배정 → 병렬/순차 실행 → 통합 보고서
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/invoke-model.sh:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/invoke-parallel.sh:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/invoke-sequential.sh:*)"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/invoke-model.sh:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/invoke-parallel.sh:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/invoke-sequential.sh:*)", "Read(*/.orchestration/results/*)"]
 ---
 # /orchestrate — 복잡한 태스크를 자동으로 분해 & 실행
 
-여러 단계가 얽힌 복잡한 요청을 서브태스크로 쪼개고,
-각각에 가장 적합한 모델을 배정해서 자동으로 실행합니다.
+여러 단계가 얽힌 복잡한 요청을 서브태스크로 쪼개고, 각각에 Advisor를 배정합니다.
 
-**패턴**: `복합 태스크 → 서브태스크 분해 → [병렬/순차 실행] → 통합 보고서`
+**패턴**: `분해 → [Advisor 병렬/순차] → Opus 종합 → [Executor 실행]`
 
 ## 사용법
 ```
 /orchestrate <복잡한 요청>
 ```
 
-## 언제 쓰나
-- "설계 + 구현 + 리뷰"처럼 여러 단계가 묶인 요청
-- 어떤 모델에게 맡길지 모를 때 자동 라우팅 원할 때
-- 대형 태스크 전체 파이프라인 자동화
+## 실행 흐름 (v3.1: Non-Blocking)
 
-## 예시
-```
-/orchestrate 새로운 결제 API를 설계하고 보안 검토까지 해줘
-/orchestrate 이 레거시 모듈 리팩토링 계획 세우고 코드 리뷰까지
-/orchestrate 현재 파이프라인 버그 찾고 수정 방안 제시해줘
-```
-
-## 실행 흐름
-
-### Phase 1: 분석 & 분해
+### Phase 0: 분해 & 라우팅 (메인)
 1. `$ARGUMENTS`의 복합 태스크 분석
 2. 독립적인 서브태스크로 분해
-3. 각 서브태스크에 카테고리 배정 → 모델 결정
-4. 의존 관계 파악 (병렬 가능 vs 순차 필요)
+3. 각 서브태스크에 카테고리 → 모델 배정
+4. 사용자에게 분해 결과 보고 + 승인 대기
 
-### Phase 2: 사용자 확인
-5. 분해 결과 표시:
-   ```
-   서브태스크 1: [설명] → [모델] (카테고리: xxx)
-   서브태스크 2: [설명] → [모델] (카테고리: xxx)
-   서브태스크 3: [설명] → [모델] ← 1번 결과 필요
-   ```
-6. 사용자 승인 대기
+### Phase 1: Advisory (비동기)
+5. 승인 후 독립 서브태스크별 Task(background, sonnet) 생성:
+   - 각 서브에이전트가 해당 Advisor 스크립트 실행
+   - 병렬 가능한 것은 동시 디스패치
+6. 사용자와 대화 계속 가능
 
-### Phase 3: 실행
-7. 독립 태스크 → `bash "${CLAUDE_PLUGIN_ROOT}/scripts/invoke-parallel.sh"` 또는 개별 `invoke-model.sh`
-8. 의존성 있는 태스크 → `bash "${CLAUDE_PLUGIN_ROOT}/scripts/invoke-sequential.sh"` 또는 선행 결과 포함 순차 실행
+### Phase 2: Synthesis (각 완료 시)
+7. 각 서브태스크 완료 시 결과 수집
+8. 전체 결과 종합 → 통합 실행 계획 수립
+9. 사용자에게 보고
 
-### Phase 4: 합성
-9. 전체 결과 취합
-10. 통합 보고서: 각 서브태스크 요약 + 전체 결론 + 다음 단계 제안
+### Phase 3: Execution (비동기)
+10. 코드 변경이 필요한 서브태스크별 Task(background, sonnet) 생성
+11. 각 Executor가 구체적 수정 지시를 기계적으로 적용
+12. 전체 완료 시 통합 결과 보고
 
 ## 카테고리 → 모델 라우팅
 | 카테고리 | 모델 |

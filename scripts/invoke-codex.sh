@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODEL="${1:-${CODEX_MODEL:-gpt-5.3-codex}}"
 PROMPT="${2:-}"
 SANDBOX="${3:-read-only}"
-TIMEOUT="${4:-300}"
+TIMEOUT="${4:-600}"
 
 if [ -z "$PROMPT" ]; then
   echo "Error: prompt is required" >&2

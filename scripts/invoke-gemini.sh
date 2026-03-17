@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 MODEL="${1:-${GEMINI_MODEL:-gemini-3-pro-preview}}"
 PROMPT="${2:-}"
-TIMEOUT="${3:-120}"
+TIMEOUT="${3:-600}"
 
 if [ -z "$PROMPT" ]; then
   echo "Error: prompt is required" >&2

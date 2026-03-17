@@ -1,20 +1,20 @@
 #!/bin/bash
-# invoke-model.sh — Unified model dispatcher
+# invoke-model.sh — Unified Advisor model dispatcher
 # Usage: invoke-model.sh <alias> <prompt>
 # Example: invoke-model.sh opus "리뷰해줘"
 #
 # Aliases: opus, codex, gemini
+# 모든 모델은 Advisor 전용 (tools=none, 텍스트 응답만)
 #
-# Tools mode (Claude 워커 전용):
-#   기본값: opus → full
-#   환경변수로 오버라이드: CLAUDE_TOOLS=none|readonly|full bash invoke-model.sh opus "..."
+# Environment variables:
+#   ORCH_OUTPUT_FILE — 결과를 이 파일에 저장 (stdout 캡처 문제 우회)
+#   ORCH_LOG_DIR     — 로그 디렉토리
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$SCRIPT_DIR/../models.env" ] && source "$SCRIPT_DIR/../models.env"
 
 ALIAS="$1"
 PROMPT="${2:-}"
-# 로그는 실행 디렉토리 기준 (전역 스크립트이므로 $SCRIPT_DIR 기반 X)
 LOG_BASE="${ORCH_LOG_DIR:-$PWD/.orchestration/results}"
 mkdir -p "$LOG_BASE" 2>/dev/null
 LOG_DIR="$(cd "$LOG_BASE" 2>/dev/null && pwd)"
@@ -27,7 +27,6 @@ if [ -z "$ALIAS" ] || [ -z "$PROMPT" ]; then
 fi
 
 # --- Agent prompt injection ---
-# 모델 alias에 맞는 에이전트 페르소나를 프롬프트 앞에 주입
 PROMPTS_DIR="$SCRIPT_DIR/../prompts"
 get_agent_prompt_file() {
   case "$1" in
@@ -50,55 +49,30 @@ else
   FULL_PROMPT="$PROMPT"
 fi
 
-# --- Claude 워커 tools mode 결정 ---
-# 우선순위: 환경변수 CLAUDE_TOOLS > 모델별 기본값
-# opus: full — 전체 도구 허용 (구현 작업, 코드 분석)
-get_default_tools() {
-  case "$1" in
-    opus)        echo "full" ;;
-    *)           echo "none" ;;
-  esac
-}
-
-CLAUDE_TOOLS="${CLAUDE_TOOLS:-}"  # 환경변수 미설정 시 모델별 기본값 사용
-
-# --- Fallback mapping ---
-get_fallback() {
-  case "$1" in
-    codex)  echo "opus" ;;
-    gemini) echo "opus" ;;
-    *)      echo "" ;;
-  esac
-}
-
 # --- Log start ---
 if [ -n "$LOG_DIR" ]; then
   echo "[$(date '+%H:%M:%S')] [$ALIAS] START: ${PROMPT:0:80}..." >> "$LOG_DIR/session-log.md"
 fi
 
-# --- Dispatch ---
-dispatch() {
+# --- Dispatch (파일 기반 출력) ---
+RESULT_TMPFILE=$(mktemp /tmp/orch_result_XXXXXX.txt)
+cleanup_result() { rm -f "$RESULT_TMPFILE" 2>/dev/null; }
+trap cleanup_result EXIT INT TERM
+
+dispatch_to_file() {
   local MODEL_ALIAS="$1"
   local MODEL_PROMPT="$2"
-  local TOOLS_MODE
-
-  # 환경변수 우선, 없으면 모델별 기본값
-  if [ -n "$CLAUDE_TOOLS" ]; then
-    TOOLS_MODE="$CLAUDE_TOOLS"
-  else
-    TOOLS_MODE=$(get_default_tools "$MODEL_ALIAS")
-  fi
+  local OUT_FILE="$3"
 
   case "$MODEL_ALIAS" in
     opus)
-      # tools_mode를 5번째 인자로 전달 (format=text, timeout=기본값은 빈 문자열로 skip)
-      bash "$SCRIPT_DIR/invoke-claude.sh" "opus"   "$MODEL_PROMPT" "text" "" "$TOOLS_MODE"
+      bash "$SCRIPT_DIR/invoke-claude.sh" "opus" "$MODEL_PROMPT" > "$OUT_FILE" 2>"${OUT_FILE}.err"
       ;;
     codex)
-      bash "$SCRIPT_DIR/invoke-codex.sh"  "${CODEX_MODEL:-gpt-5.3-codex}"        "$MODEL_PROMPT"
+      bash "$SCRIPT_DIR/invoke-codex.sh" "${CODEX_MODEL:-gpt-5.3-codex}" "$MODEL_PROMPT" > "$OUT_FILE" 2>"${OUT_FILE}.err"
       ;;
     gemini)
-      bash "$SCRIPT_DIR/invoke-gemini.sh" "${GEMINI_MODEL:-gemini-3-pro-preview}" "$MODEL_PROMPT"
+      bash "$SCRIPT_DIR/invoke-gemini.sh" "${GEMINI_MODEL:-gemini-3-pro-preview}" "$MODEL_PROMPT" > "$OUT_FILE" 2>"${OUT_FILE}.err"
       ;;
     *)
       echo "Unknown model alias: $MODEL_ALIAS" >&2
@@ -109,22 +83,22 @@ dispatch() {
 }
 
 DISPATCH_EXIT=0
-RESULT=$(dispatch "$ALIAS" "$FULL_PROMPT") || DISPATCH_EXIT=$?
+dispatch_to_file "$ALIAS" "$FULL_PROMPT" "$RESULT_TMPFILE" || DISPATCH_EXIT=$?
 
-# --- Fallback on empty result or non-zero exit ---
-if [ -z "$RESULT" ] || [ $DISPATCH_EXIT -ne 0 ]; then
-  FALLBACK=$(get_fallback "$ALIAS")
-  if [ -n "$FALLBACK" ]; then
-    echo "[WARN] $ALIAS returned empty or failed (exit:$DISPATCH_EXIT), retrying with fallback: $FALLBACK" >&2
-    DISPATCH_EXIT=0
-    RESULT=$(dispatch "$FALLBACK" "$FULL_PROMPT") || DISPATCH_EXIT=$?
-  fi
-fi
+# --- 결과 파일 크기 계산 ---
+RESULT_SIZE=$(wc -c < "$RESULT_TMPFILE" 2>/dev/null || echo "0")
 
 # --- Log end ---
 if [ -n "$LOG_DIR" ]; then
-  echo "[$(date '+%H:%M:%S')] [$ALIAS] DONE (${#RESULT} chars)" >> "$LOG_DIR/session-log.md"
+  echo "[$(date '+%H:%M:%S')] [$ALIAS] DONE (${RESULT_SIZE} bytes)" >> "$LOG_DIR/session-log.md"
 fi
 
-printf '%s\n' "$RESULT"
+# --- 출력: ORCH_OUTPUT_FILE이 지정되면 파일로, 아니면 stdout ---
+OUTPUT_FILE="${ORCH_OUTPUT_FILE:-}"
+if [ -n "$OUTPUT_FILE" ]; then
+  cp "$RESULT_TMPFILE" "$OUTPUT_FILE"
+else
+  cat "$RESULT_TMPFILE"
+fi
+
 exit $DISPATCH_EXIT
