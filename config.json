@@ -161,5 +161,21 @@
     "security_warning":      { "model": "codex",  "fallback": "opus" },
     "performance_issue":     { "model": "codex",  "fallback": "opus" },
     "design_conflict":       { "model": "opus",   "fallback": null }
+  },
+
+  "contract": {
+    "enabled": true,
+    "max_negotiation_rounds": 2,
+    "reviewer_model": "codex",
+    "max_criteria": 10,
+    "contract_dir": ".orchestration/contracts",
+    "auto_generate": false
+  },
+
+  "stress_test": {
+    "enabled": false,
+    "bypass_flags": ["contract", "evaluator", "review", "policy"],
+    "comparison_log": ".orchestration/stress-test/",
+    "auto_compare": true
   }
 }

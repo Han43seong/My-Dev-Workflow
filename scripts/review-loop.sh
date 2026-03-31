@@ -26,6 +26,7 @@ PHASE="A"
 FAILURE_MODE="none"
 ITERATION=1
 PREV_ISSUES=""
+CONTRACT_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,13 +35,37 @@ while [[ $# -gt 0 ]]; do
     --failure-mode)     FAILURE_MODE="$2"; shift 2 ;;
     --iteration)        ITERATION="$2"; shift 2 ;;
     --previous-issues)  PREV_ISSUES="$2"; shift 2 ;;
+    --contract)         CONTRACT_FILE="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 
+# --- bypass 체크 ---
+if [ "${BYPASS_REVIEW:-0}" = "1" ]; then
+  LOG_BASE="${ORCH_LOG_DIR:-$PROJECT_ROOT/.orchestration/results}"
+  mkdir -p "$LOG_BASE" 2>/dev/null
+  echo "[$(date '+%H:%M:%S')] [review-loop] BYPASSED (stress_test)" >> "$LOG_BASE/session-log.md"
+  echo '{"status": "bypassed", "reason": "stress_test", "decision": "APPROVE"}'
+  exit 0
+fi
+
 if [ -z "$DIFF_FILE" ]; then
   echo '{"error": "diff file required (--diff <file>)"}' >&2
   exit 1
+fi
+
+# --- Contract criteria 로드 ---
+CONTRACT_CRITERIA=""
+if [ -n "$CONTRACT_FILE" ] && [ -f "$CONTRACT_FILE" ]; then
+  CONTRACT_CRITERIA=$(python3 -c "
+import json, sys
+c = json.load(open('$CONTRACT_FILE', encoding='utf-8'))
+if c.get('status') == 'agreed':
+    lines = []
+    for cr in c.get('criteria', []):
+        lines.append(f\"{cr['id']}: {cr['pass_condition']} — verify {cr['verification']}\")
+    print('\n'.join(lines))
+" 2>/dev/null)
 fi
 
 # --- 결과 디렉토리 ---
@@ -126,9 +151,17 @@ IMPORTANT RULES:
 - Focus only on changes since last review"
   fi
 
+  local CONTRACT_SECTION=""
+  if [ -n "$CONTRACT_CRITERIA" ]; then
+    CONTRACT_SECTION="
+IMPORTANT: Review against these agreed contract criteria. For each criterion, determine PASS or FAIL with evidence:
+${CONTRACT_CRITERIA}
+"
+  fi
+
   echo "${ROLE}
 ${DELTA_RULE}
-
+${CONTRACT_SECTION}
 Review the following diff (Phase ${PHASE}, Iteration ${ITERATION}):
 
 \`\`\`diff
@@ -142,6 +175,9 @@ Respond in this exact JSON format:
 {
   \"issues\": [
     {\"id\": \"issue-NNN\", \"severity\": \"critical|major|minor\", \"category\": \"functional|structural\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}
+  ],
+  \"contract_results\": [
+    {\"id\": \"C-001\", \"verdict\": \"PASS|FAIL\", \"evidence\": \"reason\"}
   ]
 }
 
@@ -185,6 +221,7 @@ failure_mode = sys.argv[4]
 invoke_reason = sys.argv[5]
 prev_issues_str = sys.argv[6]
 models_str = sys.argv[7]
+contract_file = sys.argv[8] if len(sys.argv) > 8 else ''
 
 models = models_str.split() if models_str.strip() else []
 prev_issues = []
@@ -196,6 +233,7 @@ prev_ids = {i.get('id', '') for i in prev_issues if isinstance(i, dict)}
 
 # 각 모델 결과 파싱
 all_issues = []
+all_contract_results = []
 models_invoked = []
 
 for model in models:
@@ -227,6 +265,10 @@ for model in models:
             for issue in parsed.get('issues', []):
                 issue['source'] = model
                 all_issues.append(issue)
+            # contract_results 수집
+            for cr in parsed.get('contract_results', []):
+                cr['source'] = model
+                all_contract_results.append(cr)
         except Exception:
             pass
 
@@ -291,6 +333,33 @@ else:
     decision = 'APPROVE'
     decision_reason = 'no issues found'
 
+# contract_results 통합 (중복 id 시 FAIL 우선)
+merged_contract = {}
+for cr in all_contract_results:
+    cid = cr.get('id', '')
+    if cid not in merged_contract or cr.get('verdict') == 'FAIL':
+        merged_contract[cid] = cr
+contract_results_final = list(merged_contract.values())
+
+# contract 기준 로드 (있으면)
+contract_summary = None
+if contract_file and os.path.exists(contract_file):
+    try:
+        cdata = json.load(open(contract_file, encoding='utf-8'))
+        total = len(cdata.get('criteria', []))
+        passed = sum(1 for cr in contract_results_final if cr.get('verdict') == 'PASS')
+        failed = sum(1 for cr in contract_results_final if cr.get('verdict') == 'FAIL')
+        contract_summary = {
+            'contract_id': cdata.get('task_id', ''),
+            'total_criteria': total,
+            'passed': passed,
+            'failed': failed,
+            'contract_judgment': 'contract_pass' if failed == 0 and passed > 0 else ('contract_fail' if failed > 0 else 'no_data'),
+            'failed_criteria': [cr.get('id') for cr in contract_results_final if cr.get('verdict') == 'FAIL']
+        }
+    except Exception:
+        pass
+
 result = {
     'timestamp': datetime.now().astimezone().isoformat(),
     'phase': phase,
@@ -301,6 +370,8 @@ result = {
     'new_issues': [i.get('id', '') for i in deduplicated],
     'resolved_issues': resolved,
     'severity_summary': severity_summary,
+    'contract_results': contract_results_final,
+    'contract_summary': contract_summary,
     'decision': decision,
     'decision_reason': decision_reason
 }
@@ -313,7 +384,7 @@ with open(result_file, 'w', encoding='utf-8') as f:
 print(json.dumps(result, indent=2, ensure_ascii=False))
 PYEOF
 
-FINAL_RESULT=$(python3 "$TMPPY" "$RESULTS_DIR" "$PHASE" "$ITERATION" "$FAILURE_MODE" "$INVOKE_REASON" "$PREV_ISSUES_CONTENT" "$MODELS_TO_INVOKE" 2>&1)
+FINAL_RESULT=$(python3 "$TMPPY" "$RESULTS_DIR" "$PHASE" "$ITERATION" "$FAILURE_MODE" "$INVOKE_REASON" "$PREV_ISSUES_CONTENT" "$MODELS_TO_INVOKE" "$CONTRACT_FILE" 2>&1)
 
 echo "$FINAL_RESULT"
 

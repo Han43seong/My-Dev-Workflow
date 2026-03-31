@@ -9,10 +9,21 @@ CONFIG_FILE="$SCRIPT_DIR/../config.json"
 PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
 PROJECT_OVERRIDE="$PROJECT_ROOT/.orchestration/eval-config.json"
 
+# --- bypass 체크 ---
+if [ "${BYPASS_EVALUATOR:-0}" = "1" ]; then
+  LOG_DIR_BP="${PROJECT_ROOT:-$(pwd)}/.orchestration/results"
+  mkdir -p "$LOG_DIR_BP" 2>/dev/null
+  echo "[$(date '+%H:%M:%S')] [evaluate] BYPASSED (stress_test)" >> "$LOG_DIR_BP/session-log.md"
+  echo '{"status": "bypassed", "reason": "stress_test", "judgment": "PASS"}'
+  exit 0
+fi
+
 PROJECT_TYPE="default"
+CONTRACT_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-type) PROJECT_TYPE="$2"; shift 2 ;;
+    --contract)     CONTRACT_FILE="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -45,6 +56,7 @@ eval_dir = sys.argv[5]
 timestamp = sys.argv[6]
 exec_id = sys.argv[7]
 current_state = sys.argv[8]
+contract_path = sys.argv[9] if len(sys.argv) > 9 else ''
 
 config = json.load(open(config_path, encoding='utf-8'))
 evaluator = config.get('evaluator', {})
@@ -168,6 +180,54 @@ for r in results.values():
     if isinstance(r.get('detail'), dict) and 'warning_count' in r['detail']:
         total_warnings += r['detail']['warning_count']
 
+# Contract 판정 (있으면)
+contract_evaluation = None
+if contract_path and os.path.exists(contract_path):
+    try:
+        cdata = json.load(open(contract_path, encoding='utf-8'))
+        if cdata.get('status') == 'agreed':
+            criteria = cdata.get('criteria', [])
+            # 기계적 테스트 결과 기반으로 criteria 자동 판정
+            # build/test가 실패하면 기능 검증 자체가 불가 → 전부 FAIL
+            all_mechanical_pass = all(
+                r.get('status') in ('pass', 'skip')
+                for r in results.values()
+            )
+            criteria_results = []
+            for cr in criteria:
+                if not all_mechanical_pass:
+                    criteria_results.append({
+                        'id': cr['id'],
+                        'verdict': 'FAIL',
+                        'evidence': 'mechanical checks failed, cannot verify'
+                    })
+                else:
+                    # build/test PASS 시: criteria는 잠정 PASS (실제 기능 검증은 review-loop에서)
+                    criteria_results.append({
+                        'id': cr['id'],
+                        'verdict': 'PENDING',
+                        'evidence': 'mechanical checks passed, awaiting functional review'
+                    })
+
+            failed_criteria = [cr['id'] for cr in criteria_results if cr['verdict'] == 'FAIL']
+            pending_criteria = [cr['id'] for cr in criteria_results if cr['verdict'] == 'PENDING']
+
+            contract_judgment = 'contract_fail' if failed_criteria else ('contract_pending' if pending_criteria else 'contract_pass')
+
+            contract_evaluation = {
+                'contract_id': cdata.get('task_id', ''),
+                'criteria_results': criteria_results,
+                'contract_judgment': contract_judgment,
+                'failed_criteria': failed_criteria
+            }
+
+            # judgment 결합: 기계적 PASS + contract_fail → RETRY
+            if final == 'PASS' and contract_judgment == 'contract_fail':
+                final = 'RETRY'
+                reason = f'{reason}, contract_fail ({len(failed_criteria)} criteria)'
+    except Exception:
+        pass
+
 # 결과 생성
 eval_result = {
     'timestamp': datetime.now().astimezone().isoformat(),
@@ -178,6 +238,8 @@ eval_result = {
     'judgment': final,
     'reason': reason
 }
+if contract_evaluation:
+    eval_result['contract_evaluation'] = contract_evaluation
 
 ts_file = os.path.join(eval_dir, f'{timestamp}-eval.json')
 latest_file = os.path.join(eval_dir, 'latest-eval.json')
@@ -197,7 +259,7 @@ while len(old_files) > max_hist:
 print(json.dumps(eval_result, indent=2, ensure_ascii=False))
 PYEOF
 
-EVAL_RESULT=$(python3 "$TMPPY" "$CONFIG_FILE" "$PROJECT_OVERRIDE" "$PROJECT_TYPE" "$PROJECT_ROOT" "$EVAL_DIR" "$TIMESTAMP" "$EXEC_ID" "$CURRENT_STATE" 2>&1)
+EVAL_RESULT=$(python3 "$TMPPY" "$CONFIG_FILE" "$PROJECT_OVERRIDE" "$PROJECT_TYPE" "$PROJECT_ROOT" "$EVAL_DIR" "$TIMESTAMP" "$EXEC_ID" "$CURRENT_STATE" "$CONTRACT_FILE" 2>&1)
 EVAL_EXIT=$?
 
 echo "$EVAL_RESULT"

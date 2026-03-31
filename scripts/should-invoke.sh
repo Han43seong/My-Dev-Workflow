@@ -12,6 +12,15 @@ EVAL_DIR="$PROJECT_ROOT/.orchestration/eval"
 LATEST_EVAL="$EVAL_DIR/latest-eval.json"
 STATE_FILE="$PROJECT_ROOT/.orchestration/state.json"
 
+# --- bypass 체크 ---
+if [ "${BYPASS_POLICY:-0}" = "1" ]; then
+  LOG_DIR_BP="$PROJECT_ROOT/.orchestration/results"
+  mkdir -p "$LOG_DIR_BP" 2>/dev/null
+  echo "[$(date '+%H:%M:%S')] [should-invoke] BYPASSED (stress_test) → INVOKE" >> "$LOG_DIR_BP/session-log.md"
+  echo 'INVOKE reason="bypassed (stress_test)"'
+  exit 0
+fi
+
 ALIAS="${1:-}"
 CONTEXT="${2:-}"
 FAILURE_MODE="${3:-none}"

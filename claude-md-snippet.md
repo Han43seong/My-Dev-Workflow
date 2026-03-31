@@ -43,10 +43,12 @@ Aliases: `opus`, `codex`, `gemini`
 ### v6 신규 스크립트
 | 스크립트 | 설명 |
 |----------|------|
-| `evaluate.sh` | build/lint/test 실행 → JSON 결과 + 판정 |
+| `evaluate.sh` | build/lint/test 실행 + Contract 기준 판정 → JSON 결과 + 판정 |
 | `should-invoke.sh` | 정책 함수: 모델 호출 여부 판단 (INVOKE/SKIP) |
 | `state-machine.sh` | 상태 머신: init/transition/status/history |
-| `review-loop.sh` | v6 리뷰 루프: Claude 자체 분류 → 조건부 호출 |
+| `review-loop.sh` | v6 리뷰 루프: Claude 자체 분류 → 조건부 호출 (Contract 기준 주입 지원) |
+| `contract.sh` | Contract Phase: 구현 전 성공 기준 사전 합의 (Claude 초안 → Codex 검토) |
+| `stress-test.sh` | 하네스 컴포넌트 제거 스트레스 테스트 (bypass 전/후 비교) |
 
 ### 슬래시 커맨드
 | 커맨드 | 설명 |
@@ -74,3 +76,5 @@ Aliases: `opus`, `codex`, `gemini`
 - 로그: `$PWD/.orchestration/results/session-log.md` (실행 디렉토리)
 - eval 결과: `$PWD/.orchestration/eval/latest-eval.json`
 - 상태: `$PWD/.orchestration/state.json`
+- contracts: `$PWD/.orchestration/contracts/latest-contract.json`
+- stress-test: `$PWD/.orchestration/stress-test/`

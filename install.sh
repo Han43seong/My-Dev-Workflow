@@ -71,7 +71,7 @@ echo "=== 파일 설치 ==="
 # orchestration 디렉토리
 mkdir -p "$TARGET_ORCH/scripts" "$TARGET_ORCH/prompts"
 
-echo "  scripts/ (14개)"
+echo "  scripts/ (16개)"
 cp "$SCRIPT_DIR/scripts/"*.sh "$TARGET_ORCH/scripts/"
 chmod +x "$TARGET_ORCH/scripts/"*.sh
 
