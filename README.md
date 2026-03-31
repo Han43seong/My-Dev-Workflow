@@ -8,17 +8,17 @@ Claude Code 기반 개발 워크플로우 — **opus(Claude), codex(OpenAI), gem
 +---------------------------------------------------------------------+
 |                 Claude Code (Opus) -- 오케스트레이터                    |
 |                                                                       |
-|  +------------------+  +--------------------+                         |
-|  | 슬래시 커맨드 (8)  |  | v6 인프라            |                         |
-|  | /delegate         |  | evaluate.sh        |                         |
-|  | /parallel         |  | should-invoke.sh   |                         |
-|  | /sequential       |  | state-machine.sh   |                         |
-|  | /adversarial      |  | review-loop.sh     |                         |
-|  | /consensus        |  | log-outcome.sh     |                         |
-|  | /orchestrate      |  | resolve-project.sh |                         |
-|  | /plan             |  +--------------------+                         |
-|  | /experiment       |                                                 |
-|  +--------+---------+                                                 |
+|  +------------------+  +--------------------+  +------------------+  |
+|  | 슬래시 커맨드 (8)  |  | v6 인프라            |  | Harness 패턴      |  |
+|  | /delegate         |  | evaluate.sh        |  | contract.sh      |  |
+|  | /parallel         |  | should-invoke.sh   |  | stress-test.sh   |  |
+|  | /sequential       |  | state-machine.sh   |  +------------------+  |
+|  | /adversarial      |  | review-loop.sh     |                        |
+|  | /consensus        |  | log-outcome.sh     |                        |
+|  | /orchestrate      |  | resolve-project.sh |                        |
+|  | /plan             |  +--------------------+                        |
+|  | /experiment       |                                                |
+|  +--------+---------+                                                |
 |           |  CLI subprocess                                            |
 |           v                                                            |
 |  +----------------------------------------------------------+        |
@@ -195,6 +195,67 @@ Claude 자체 분류(Phase 0) → 조건부 모델 호출:
 모델 호출 결과를 JSONL로 기록: adoption_rate, retry_count, rate_limit 추적
 위치: `.orchestration/results/policy-log.jsonl`
 
+## Harness 패턴 (v6.1)
+
+Anthropic "[Harness Design for Long-Running Apps](https://www.anthropic.com/engineering/harness-design-long-running-apps)" 블로그에서 소개된 패턴을 멀티모델 오케스트레이션에 적용합니다.
+
+### Contract Phase (`contract.sh`)
+
+구현 전에 **성공 기준을 사전 정의하고 합의**하는 단계. TDD에서 테스트를 먼저 작성하는 것과 같은 원리.
+
+```bash
+bash ~/.claude/orchestration/scripts/contract.sh --task "TODO 앱 CRUD API 구현"
+```
+
+1. Claude가 criteria 초안 생성 (기능별 검증 방법 + PASS 조건)
+2. Codex가 검증 가능성 검토 (모호한 조건, 누락 기준 지적)
+3. 최대 2라운드 협상 → 합의 확정
+4. `.orchestration/contracts/latest-contract.json`에 저장
+
+Contract는 review-loop과 evaluate에 `--contract` 인자로 전달:
+```bash
+# 리뷰 시 Contract 기준 주입
+bash ~/.claude/orchestration/scripts/review-loop.sh \
+  --diff changes.diff --phase A --contract .orchestration/contracts/latest-contract.json
+
+# 평가 시 Contract 기준 판정
+bash ~/.claude/orchestration/scripts/evaluate.sh \
+  --contract .orchestration/contracts/latest-contract.json
+```
+
+### Functional Evaluation
+
+기존 evaluate.sh의 build/lint/test 기계적 판정 위에 **Contract 기준 판정 레이어**가 추가됩니다:
+
+| 기계적 판정 | Contract 판정 | 최종 judgment |
+|------------|--------------|-------------|
+| ROLLBACK/ESCALATE | (무관) | 그대로 (우선) |
+| PASS | contract_fail | **RETRY** |
+| PASS | contract_pass | PASS |
+
+### Stress Test (`stress-test.sh`)
+
+모델이 발전하면 하네스 컴포넌트가 여전히 필요한지 검증합니다:
+
+```bash
+# config.json에서 stress_test.enabled=true 설정 후
+bash ~/.claude/orchestration/scripts/stress-test.sh \
+  --bypass contract --task "작업 설명"
+```
+
+동일 작업을 **정상 실행 vs bypass 실행**으로 비교:
+- **KEEP**: bypass 시 품질 저하 → 컴포넌트 필요
+- **REMOVE**: 결과 동일 → 컴포넌트 불필요, 제거 가능
+- **CONDITIONAL**: 혼합 결과 → 추가 데이터 필요
+
+bypass 가능한 컴포넌트:
+| 플래그 | 대상 |
+|--------|------|
+| `BYPASS_CONTRACT` | contract.sh |
+| `BYPASS_EVALUATOR` | evaluate.sh |
+| `BYPASS_REVIEW` | review-loop.sh |
+| `BYPASS_POLICY` | should-invoke.sh |
+
 ## 에이전트 프롬프트
 
 | 에이전트 | 기본 모델 | 역할 |
@@ -268,12 +329,14 @@ bash ~/.claude/orchestration/scripts/invoke-model.sh --force codex "<prompt>"
     │   ├── invoke-sequential.sh ← 순차 실행
     │   ├── invoke-adversarial.sh← 논쟁 실행
     │   ├── refresh-models.sh    ← 모델 ID 자동 감지
-    │   ├── evaluate.sh          ← Evaluator
+    │   ├── evaluate.sh          ← Evaluator + Contract 판정
     │   ├── should-invoke.sh     ← 정책 함수
     │   ├── state-machine.sh     ← 상태 머신
-    │   ├── review-loop.sh       ← 리뷰 루프
+    │   ├── review-loop.sh       ← 리뷰 루프 + Contract 기준 주입
     │   ├── log-outcome.sh       ← 운영 지표
-    │   └── resolve-project.sh   ← 프로젝트 매핑
+    │   ├── resolve-project.sh   ← 프로젝트 매핑
+    │   ├── contract.sh          ← Contract Phase (Harness)
+    │   └── stress-test.sh       ← 컴포넌트 스트레스 테스트 (Harness)
     └── prompts/
         ├── code-reviewer.md
         ├── debugger.md
@@ -296,7 +359,8 @@ bash uninstall.sh
 | v1~v3 | Skills/MCP 기반 → CLI subprocess 전환 |
 | v4 | CLI subprocess 안정화, HOME 격리 |
 | v5 | 역할 기반, 3라운드 리뷰 루프, 토큰 최적화 |
-| **v6** | Claude-first, Evaluator 자동 판정, 상태 머신, 정책 함수, Obsidian 연동 |
+| v6 | Claude-first, Evaluator 자동 판정, 상태 머신, 정책 함수, Obsidian 연동 |
+| **v6.1** | Harness 패턴 — Contract Phase, Functional Evaluation, Stress Test |
 
 ## 라이선스
 
